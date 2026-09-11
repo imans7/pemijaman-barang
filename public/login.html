@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Masuk — SIPAM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <h1>SIPAM</h1>
+    <p>PT Inti Prima Karya — masuk untuk melanjutkan</p>
+
+    <div class="field">
+      <label>Username</label>
+      <input type="text" id="lUsername" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="lPassword" autocomplete="current-password">
+    </div>
+    <div id="loginErr" class="err" style="display:none;"></div>
+    <button class="btn accent" id="loginBtn" onclick="doLogin()">Masuk</button>
+  </div>
+</div>
+
+<script>
+async function checkAlreadyLoggedIn(){
+  try{
+    const res = await fetch('/api/me');
+    if(res.ok) window.location.href = '/';
+  }catch(e){ /* diamkan, tetap di halaman login */ }
+}
+checkAlreadyLoggedIn();
+
+async function doLogin(){
+  const username = document.getElementById('lUsername').value.trim();
+  const password = document.getElementById('lPassword').value;
+  const errEl = document.getElementById('loginErr');
+  const btn = document.getElementById('loginBtn');
+  if(!username || !password){
+    errEl.textContent = 'Username dan password wajib diisi.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Memeriksa...';
+  try{
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'Gagal masuk.');
+    window.location.href = '/';
+  }catch(e){
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Masuk';
+  }
+}
+
+document.getElementById('lPassword').addEventListener('keydown', function(e){
+  if(e.key === 'Enter') doLogin();
+});
+</script>
+</body>
+</html>
