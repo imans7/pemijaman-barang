@@ -137,7 +137,8 @@ function getFilteredItems(){
   const q = (document.getElementById('searchInput').value || '').toLowerCase();
   const loc = document.getElementById('locationFilter').value;
   const cust = document.getElementById('customerFilter').value;
-  return state.items.filter(i=>{
+  
+  let filtered = state.items.filter(i=>{
     const matchQ = !q
       || i.name.toLowerCase().includes(q)
       || i.location.toLowerCase().includes(q)
@@ -146,6 +147,17 @@ function getFilteredItems(){
     const matchCust = !cust || cust==='Semua customer' || i.customer===cust;
     return matchQ && matchLoc && matchCust;
   });
+
+  // Tambahkan logika pengurutan: jika mode discontinue aktif, taruh data discontinue di paling atas
+  if (state.showDiscontinued) {
+    filtered.sort((a, b) => {
+      if (a.status === 'discontinued' && b.status !== 'discontinued') return -1;
+      if (a.status !== 'discontinued' && b.status === 'discontinued') return 1;
+      return 0;
+    });
+  }
+
+  return filtered;
 }
 
 function renderStats(){
