@@ -37,6 +37,9 @@
           </div>
           <select id="locationFilter"></select>
           <select id="customerFilter"></select>
+          <label style="font-size:12.5px; display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none;">
+            <input type="checkbox" id="toggleDiscontinuedCb" onchange="toggleShowDiscontinued(this.checked)"> Tampilkan yang Discontinue
+          </label>
         </div>
         <div id="importStatus" class="import-status"></div>
         <div class="bulk-bar">
