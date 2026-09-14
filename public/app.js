@@ -11,7 +11,7 @@ let state = {
   selectedIds: new Set(),
   selectedHistoryCodes: new Set(),
   lastOperator: localStorage.getItem('sipam_lastOperator') || '',
-  lastCopies: 1 // State untuk menyimpan jumlah cetakan terakhir
+  showDiscontinued: false
 };
 
 const API = {
@@ -67,10 +67,16 @@ async function doLogout(){
   redirectToLogin();
 }
 
+async function toggleShowDiscontinued(checked){
+  state.showDiscontinued = checked;
+  await loadAll();
+}
+
 async function loadAll(){
   try{
+    const itemsUrl = API.items + (state.showDiscontinued ? '?includeDiscontinued=true' : '');
     const [items, transactions] = await Promise.all([
-      apiGet(API.items),
+      apiGet(itemsUrl),
       apiGet(API.transactions)
     ]);
     state.items = items;
@@ -180,18 +186,34 @@ function renderCatalog(){
     return;
   }
   list.innerHTML = filtered.map(i=>{
-    const out = i.available<=0;
-    const sel = i.id===state.selectedItemId ? ' selected' : '';
+    const isDiscontinued = i.status === 'discontinued';
+    const out = i.available <= 0 && !isDiscontinued;
+    
+    const sel = i.id === state.selectedItemId ? ' selected' : '';
     const cls = out ? ' out' : sel;
-    const badge = out ? '<span class="badge out">Dipinjam</span>' : '<span class="badge avail">Tersedia</span>';
-    const clickAttr = out ? '' : ' onclick="selectItem(\''+i.id+'\')"';
+    
+    const badge = isDiscontinued 
+      ? '<span class="badge" style="background:var(--line);color:var(--ink-soft);">Discontinued</span>'
+      : (out ? '<span class="badge out">Dipinjam</span>' : '<span class="badge avail">Tersedia</span>');
+    
+    let actionBtns = '';
+    if (isDiscontinued) {
+      actionBtns = '<button class="btn secondary small" style="color:var(--ok); border-color:var(--ok); margin-right:6px;" onclick="event.stopPropagation();reactivateItem(\''+i.id+'\')">Aktifkan</button>'
+                 + '<button class="btn secondary small" style="color:var(--warn); border-color:var(--warn);" onclick="event.stopPropagation();deleteItemPermanently(\''+i.id+'\')">Hapus</button>';
+    } else {
+      actionBtns = '<button class="btn secondary small" style="margin-right:6px;" onclick="event.stopPropagation();viewItemHistory(\''+i.id+'\')">Riwayat / Edit</button>'
+                 + '<button class="btn secondary small" style="color:var(--warn); border-color:var(--warn);" onclick="event.stopPropagation();promptManageItem(\''+i.id+'\')">Hapus / Discon</button>';
+    }
+
+    const clickAttr = (out || isDiscontinued) ? '' : ' onclick="selectItem(\''+i.id+'\')"';
     const checked = state.selectedIds.has(i.id) ? ' checked' : '';
+
     return '<div class="item-tag'+cls+'"'+clickAttr+'>'
       +'<input type="checkbox" class="item-checkbox"'+checked+' onclick="event.stopPropagation()" onchange="toggleItemCheckbox(\''+i.id+'\', this.checked)">'
       +'<div class="hole"></div>'
       +'<div class="info"><b>'+i.name+'</b><span>'+itemDetailLine(i)+(i.customer?' · Customer '+i.customer:'')+'</span></div>'
       +'<div class="nourut-box"><label>No Urut</label><div class="nourut-value">'+(i.manualNo||'-')+'</div></div>'
-      +'<div class="side">'+badge+'<div style="display:flex;gap:8px;"><button class="hist-link" onclick="event.stopPropagation();viewItemHistory(\''+i.id+'\')">Riwayat</button><button class="hist-link" style="color:var(--warn);" onclick="event.stopPropagation();deleteItem(\''+i.id+'\')">Hapus</button></div></div>'
+      +'<div class="side" style="align-items:flex-end;">'+badge+'<div style="display:flex; gap:6px; margin-top:8px;">'+actionBtns+'</div></div>'
       +'</div>';
   }).join('');
   updateBulkBar();
@@ -260,18 +282,45 @@ function openAddItemForm(){
   render();
 }
 
-async function deleteItem(id){
+function promptManageItem(id){
+  state.selectedItemId = id;
+  state.view = 'manage-item';
+  render();
+}
+
+async function deleteItemPermanently(id){
   const item = state.items.find(i=>i.id===id);
   if(!item) return;
   const activeLoan = item.available < item.stock;
   const msg = activeLoan
-    ? 'Pisau "'+item.name+'" sedang tercatat dipinjam. Yakin ingin menghapus datanya dari katalog? Riwayat transaksinya tetap tersimpan.'
-    : 'Yakin ingin menghapus pisau "'+item.name+'" dari katalog?';
+    ? 'Pisau "'+item.name+'" sedang dipinjam! Yakin ingin menghapus permanen? (Riwayat tetap ada)'
+    : 'Yakin ingin menghapus pisau "'+item.name+'" secara PERMANEN? (Riwayat tetap ada)';
   if(!confirm(msg)) return;
   try{
     await apiSend(API.items+'/'+encodeURIComponent(id), 'DELETE');
     if(state.selectedItemId===id){ state.selectedItemId=null; state.view='idle'; }
     state.selectedIds.delete(id);
+    await loadAll();
+  }catch(e){
+    alert(e.message);
+  }
+}
+
+async function discontinueItem(id){
+  try{
+    await apiSend(API.items+'/'+encodeURIComponent(id)+'/discontinue', 'POST');
+    if(state.selectedItemId===id){ state.selectedItemId=null; state.view='idle'; }
+    state.selectedIds.delete(id);
+    await loadAll();
+  }catch(e){
+    alert(e.message);
+  }
+}
+
+async function reactivateItem(id){
+  try{
+    await apiSend(API.items+'/'+encodeURIComponent(id)+'/reactivate', 'POST');
+    if(state.selectedItemId===id){ state.selectedItemId=null; state.view='idle'; }
     await loadAll();
   }catch(e){
     alert(e.message);
@@ -295,6 +344,39 @@ async function submitAddItem(){
   try{
     await apiSend(API.items, 'POST', { name, tempat, rak, mata, papan, customer, manualNo });
     state.view = 'idle';
+    await loadAll();
+  }catch(e){
+    errEl.textContent = e.message;
+    errEl.style.display='block';
+  }
+}
+
+function openEditItemForm(id){
+  state.selectedItemId = id;
+  state.view = 'edit-item';
+  render();
+}
+
+async function submitEditItem(){
+  const item = state.items.find(i=>i.id===state.selectedItemId);
+  if(!item) return;
+
+  const name = document.getElementById('eName').value.trim();
+  const tempat = document.getElementById('eTempat').value.trim();
+  const rak = document.getElementById('eRak').value.trim();
+  const mata = document.getElementById('eMata').value.trim();
+  const papan = document.getElementById('ePapan').value.trim();
+  const customer = document.getElementById('eCustomer').value.trim();
+  const manualNo = document.getElementById('eManualNo').value.trim();
+  const errEl = document.getElementById('editItemErr');
+
+  if(!name){ errEl.textContent='Nama pisau wajib diisi.'; errEl.style.display='block'; return; }
+  if(!rak){ errEl.textContent='Rak wajib diisi.'; errEl.style.display='block'; return; }
+  errEl.style.display='none';
+
+  try{
+    await apiSend(API.items+'/'+encodeURIComponent(item.id), 'PATCH', { name, tempat, rak, mata, papan, customer, manualNo });
+    state.view = 'history'; // Setelah edit, kembalikan ke panel riwayat/edit
     await loadAll();
   }catch(e){
     errEl.textContent = e.message;
@@ -332,6 +414,45 @@ function renderOperatorPanel(){
     return;
   }
 
+  if(state.view === 'edit-item'){
+    const item = state.items.find(i=>i.id===state.selectedItemId);
+    if(!item){ state.view='idle'; render(); return; }
+    body.innerHTML =
+      '<h3 style="font-size:15px;margin-bottom:14px;">Edit Data Pisau</h3>'
+      +'<div class="field"><label>Nama pisau</label><input type="text" id="eName" value="'+item.name+'"></div>'
+      +'<div class="row2">'
+      +'<div class="field"><label>Rak</label><input type="text" id="eRak" value="'+item.rak+'"></div>'
+      +'<div class="field"><label>Tempat</label><input type="text" id="eTempat" value="'+item.tempat+'"></div>'
+      +'</div>'
+      +'<div class="row2">'
+      +'<div class="field"><label>Mata</label><input type="text" id="eMata" value="'+item.mata+'"></div>'
+      +'<div class="field"><label>Papan</label><input type="text" id="ePapan" value="'+item.papan+'"></div>'
+      +'</div>'
+      +'<div class="field"><label>No Urut</label><input type="text" id="eManualNo" value="'+(item.manualNo||'')+'"></div>'
+      +'<div class="field"><label>Customer (opsional)</label><input type="text" id="eCustomer" value="'+(item.customer||'')+'"></div>'
+      +'<div id="editItemErr" class="err" style="display:none;"></div>'
+      +'<div class="btn-row"><button class="btn accent" onclick="submitEditItem()">Simpan Perubahan</button>'
+      +'<button class="btn secondary" onclick="viewItemHistory(\''+item.id+'\')">Batal</button></div>';
+    return;
+  }
+
+  if(state.view === 'manage-item'){
+    const item = state.items.find(i=>i.id===state.selectedItemId);
+    if(!item){ state.view='idle'; render(); return; }
+    body.innerHTML = '<div class="detail-panel">'
+      +'<h3>Kelola Pisau: '+item.name+'</h3>'
+      +'<p style="font-size:13.5px;color:var(--ink-soft);margin:10px 0 16px;line-height:1.5;">'
+      +'Silakan pilih tindakan:<br>'
+      +'<b>• Discontinue:</b> Menyembunyikan pisau dari katalog agar tidak bisa dipinjam, namun data dan riwayat tidak terhapus.<br>'
+      +'<b>• Hapus Permanen:</b> Menghapus data pisau dari sistem selamanya.'
+      +'</p></div>'
+      +'<div class="btn-row">'
+      +'<button class="btn secondary" onclick="discontinueItem(\''+item.id+'\')">Discontinue (Sembunyikan)</button>'
+      +'<button class="btn accent" style="background:var(--warn);border-color:var(--warn);" onclick="deleteItemPermanently(\''+item.id+'\')">Hapus Permanen</button>'
+      +'<button class="link-btn" onclick="cancelSelection()">Batal</button></div>';
+    return;
+  }
+
   if(state.view === 'history'){
     const item = state.items.find(i=>i.id===state.selectedItemId);
     if(!item){ state.view='idle'; render(); return; }
@@ -353,14 +474,19 @@ function renderOperatorPanel(){
           return '<div class="hist-row"><span class="who">'+t.customer+' <span style="color:var(--ink-soft);font-weight:400;">(oleh '+t.operator+')</span></span><span class="when">'+fmtDate(t.date)+' '+(t.time||'')+'</span>'+statusTxt+'</div>';
         }).join('')
         + (fullList.length > 3 ? '<div class="hint" style="margin-top:8px;">Menampilkan 3 peminjaman terbaru dari total '+fullList.length+'.</div>' : '');
+    
+    // UI digabung antara judul dan tombol "Edit Data"
     body.innerHTML = '<div class="detail-panel">'
-      +'<h3>'+item.name+'</h3>'
+      +'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
+      +'<h3 style="margin:0; font-size:16px;">'+item.name+'</h3>'
+      +'<button class="btn secondary small" onclick="openEditItemForm(\''+item.id+'\')">Edit Data</button>'
+      +'</div>'
       +detailGrid
       +'<h3 style="font-size:13px;color:var(--ink-soft);margin-bottom:6px;">Riwayat peminjaman</h3>'
       +histHtml
       +'</div>'
       +'<div class="btn-row">'
-      +(item.available>0 ? '<button class="btn accent" onclick="selectItem(\''+item.id+'\')">Pinjam pisau ini</button>' : '')
+      +(item.available>0 && item.status!=='discontinued' ? '<button class="btn accent" onclick="selectItem(\''+item.id+'\')">Pinjam pisau ini</button>' : '')
       +'<button class="btn secondary" onclick="cancelSelection()">Tutup</button></div>';
     return;
   }
@@ -368,10 +494,7 @@ function renderOperatorPanel(){
   if(state.view === 'form'){
     const item = state.items.find(i=>i.id===state.selectedItemId);
     if(!item){ state.view='idle'; render(); return; }
-    
-    // Deteksi otomatis jumlah papan (jika berupa angka, jika '-' diubah jadi 1)
-    const defaultCopies = parseInt(item.papan) ? parseInt(item.papan) : 1;
-    
+    const defaultCount = defaultVoucherCount(item);
     body.innerHTML =
       '<div class="selected-strip"><div class="row1"><span>Meminjamkan: <b>'+item.name+'</b></span>'
       +'<button class="link-btn" onclick="cancelSelection()">Ganti</button></div>'
@@ -386,9 +509,8 @@ function renderOperatorPanel(){
       +'<div class="field"><label>Tanggal pinjam</label><input type="date" id="fDate" value="'+todayStr()+'"></div>'
       +'<div id="formErr" class="err" style="display:none;"></div>'
       +'<div class="btn-row" style="align-items:center;">'
-      +'<button class="btn accent" onclick="submitLoan()">Simpan &amp; cetak</button>'
-      +'<span style="font-size:12.5px;color:var(--ink-soft);margin-left:4px;">Jml Papan:</span>'
-      +'<input type="number" id="fCopies" value="'+defaultCopies+'" min="1" style="width:55px; margin-left:4px; margin-right:4px; padding:6px 6px;">'
+      +'<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px;">Jumlah voucher (per papan)<input type="number" id="fVoucherCount" min="1" value="'+defaultCount+'" style="width:64px;"></label>'
+      +'<button class="btn accent" onclick="submitLoan()">Simpan &amp; cetak voucher</button>'
       +'<button class="btn secondary" onclick="cancelSelection()">Batal</button></div>';
     return;
   }
@@ -396,12 +518,8 @@ function renderOperatorPanel(){
   if(state.view === 'voucher'){
     const tx = state.transactions.find(t=>t.code===state.lastCode);
     if(!tx){ state.view='idle'; render(); return; }
-    const currentCopies = state.lastCopies || 1;
     body.innerHTML = renderVoucherHtml(tx, false)
-      +'<div class="btn-row" style="align-items:center;">'
-      +'<button class="btn accent" onclick="printVoucher(\''+tx.code+'\')">Cetak voucher</button>'
-      +'<span style="font-size:12.5px;color:var(--ink-soft);margin-left:4px;">Jml Papan:</span>'
-      +'<input type="number" id="vCopies" value="'+currentCopies+'" min="1" style="width:55px; margin-left:4px; margin-right:4px; padding:6px 6px;">'
+      +'<div class="btn-row"><button class="btn accent" onclick="printVoucher(\''+tx.code+'\')">Cetak voucher</button>'
       +'<button class="btn secondary" onclick="cancelSelection()">Transaksi baru</button></div>';
   }
 }
@@ -421,15 +539,20 @@ function renderVoucherHtml(tx, forPrint, copyLabel){
     +'</div>';
 }
 
-// Looping cetak sejumlah 'papan' untuk Karyawan, ditambah 1 lembar pasti untuk Arsip Admin.
-function voucherCopiesHtml(tx, copies = 1){
+function defaultVoucherCount(item){
+  const n = parseInt(item && item.papan, 10);
+  return (n && n>0) ? n : 1;
+}
+
+function voucherCopiesHtml(tx){
+  const n = tx.voucherCount || 1;
   let html = '';
-  for(let i = 1; i <= copies; i++){
-    let label = copies > 1 ? 'Lembar Karyawan (Papan ' + i + '/' + copies + ')' : 'Lembar Karyawan (Papan)';
-    html += '<div class="voucher-page">'+renderVoucherHtml(tx, true, label)+'</div>';
+  for(let i=1;i<=n;i++){
+    html += '<div class="voucher-page">'+renderVoucherHtml(tx, true, 'Papan '+i+' dari '+n)+'</div>';
   }
-  // Arsip Admin dicetak tepat 1 kali saja
-  html += '<div class="voucher-page">'+renderVoucherHtml(tx, true, 'Lembar Admin (Arsip)')+'</div>';
+  if(!tx.adminCopyPrinted){
+    html += '<div class="voucher-page">'+renderVoucherHtml(tx, true, 'Lembar untuk Admin (Arsip)')+'</div>';
+  }
   return html;
 }
 
@@ -440,7 +563,7 @@ async function submitLoan(){
   const spk = document.getElementById('fSpk').value.trim();
   const product = document.getElementById('fProduct').value.trim();
   const date = document.getElementById('fDate').value;
-  const copies = parseInt(document.getElementById('fCopies').value) || 1;
+  const voucherCount = parseInt(document.getElementById('fVoucherCount').value, 10) || 1;
   const errEl = document.getElementById('formErr');
 
   if(!operator){ errEl.textContent='Nama operator wajib diisi.'; errEl.style.display='block'; return; }
@@ -448,65 +571,52 @@ async function submitLoan(){
   if(!spk){ errEl.textContent='Nomor SPK wajib diisi.'; errEl.style.display='block'; return; }
   if(!product){ errEl.textContent='Nama produk wajib diisi.'; errEl.style.display='block'; return; }
   if(!date){ errEl.textContent='Tanggal pinjam wajib diisi.'; errEl.style.display='block'; return; }
+  if(voucherCount<1){ errEl.textContent='Jumlah voucher minimal 1.'; errEl.style.display='block'; return; }
   if(item.available<=0){ errEl.textContent='Pisau ini sedang tidak tersedia.'; errEl.style.display='block'; return; }
   errEl.style.display='none';
 
   try{
-    const tx = await apiSend(API.loans, 'POST', { operator, customer, spk, product, itemId:item.id, date });
+    const tx = await apiSend(API.loans, 'POST', { operator, customer, spk, product, itemId:item.id, date, voucherCount });
     state.lastOperator = operator;
     localStorage.setItem('sipam_lastOperator', operator);
     state.lastCode = tx.code;
-    state.lastCopies = copies;
     state.view = 'voucher';
     await loadAll();
-    setTimeout(()=>printVoucher(tx.code, copies), 200);
+    setTimeout(()=>printVoucher(tx.code), 200);
   }catch(e){
     errEl.textContent = e.message;
     errEl.style.display='block';
   }
 }
 
-function printVoucher(code, copiesParam){
-  const tx = state.transactions.find(t=>t.code===code);
-  if(!tx) return;
-  
-  let copies = copiesParam;
-  if(!copies) {
-    const input = document.getElementById('vCopies');
-    if (input) {
-      copies = parseInt(input.value);
-    } else {
-      const histInput = document.getElementById('histCopies_' + code);
-      if (histInput) {
-        copies = parseInt(histInput.value);
-      } else {
-        const match = (tx.itemDetail||'').match(/Papan (\d+)/);
-        copies = match ? parseInt(match[1]) : 1;
-      }
-    }
-  }
-  copies = copies || 1;
-  document.getElementById('printArea').innerHTML = '<div class="print-grid">'+voucherCopiesHtml(tx, copies)+'</div>';
-  window.print();
+async function markAdminCopyPrinted(code){
+  try{ await apiSend('/api/loans/'+encodeURIComponent(code)+'/mark-admin-printed', 'POST'); }catch(e){ /* diamkan, tidak fatal */ }
 }
 
-function bulkPrintHistory(){
+async function printVoucher(code){
+  const tx = state.transactions.find(t=>t.code===code);
+  if(!tx) return;
+  const includesAdminCopy = !tx.adminCopyPrinted;
+  document.getElementById('printArea').innerHTML = '<div class="print-grid">'+voucherCopiesHtml(tx)+'</div>';
+  window.print();
+  if(includesAdminCopy){
+    tx.adminCopyPrinted = true;
+    await markAdminCopyPrinted(code);
+  }
+}
+
+async function bulkPrintHistory(){
   const codes = Array.from(state.selectedHistoryCodes);
   if(codes.length===0) return;
   const txs = codes.map(c => state.transactions.find(t=>t.code===c)).filter(Boolean);
   if(txs.length===0) return;
-  document.getElementById('printArea').innerHTML = '<div class="print-grid">' + txs.map(tx => {
-    const input = document.getElementById('histCopies_' + tx.code);
-    let copies;
-    if (input) {
-      copies = parseInt(input.value);
-    } else {
-      const match = (tx.itemDetail||'').match(/Papan (\d+)/);
-      copies = match ? parseInt(match[1]) : 1;
-    }
-    return voucherCopiesHtml(tx, copies || 1);
-  }).join('') + '</div>';
+  const codesNeedingAdminCopy = txs.filter(t => !t.adminCopyPrinted).map(t=>t.code);
+  document.getElementById('printArea').innerHTML = '<div class="print-grid">'+txs.map(voucherCopiesHtml).join('')+'</div>';
   window.print();
+  if(codesNeedingAdminCopy.length>0){
+    txs.forEach(t => { if(codesNeedingAdminCopy.includes(t.code)) t.adminCopyPrinted = true; });
+    await Promise.all(codesNeedingAdminCopy.map(markAdminCopyPrinted));
+  }
 }
 
 function startReturnConfirm(code){
@@ -639,14 +749,10 @@ function renderHistory(){
     return;
   }
   body.innerHTML = rows.map(t=>{
-    const match = (t.itemDetail||'').match(/Papan (\d+)/);
-    const defaultCopies = match ? parseInt(match[1]) : 1;
-
     let actionCell;
     if(t.status==='dikembalikan'){
-      actionCell = '<div class="action-cell" style="align-items:center;">'
-        +'<input type="number" id="histCopies_'+t.code+'" value="'+defaultCopies+'" min="1" style="width:40px; padding:3px 5px; font-size:11.5px; border:1px solid var(--line); border-radius:2px;" title="Jumlah Papan">'
-        +'<button class="action-btn act-reprint" onclick="printVoucher(\''+t.code+'\', parseInt(document.getElementById(\'histCopies_'+t.code+'\').value) || 1)">Cetak ulang</button>'
+      actionCell = '<div class="action-cell">'
+        +'<button class="action-btn act-reprint" onclick="printVoucher(\''+t.code+'\')">Cetak ulang</button>'
         +'<button class="action-btn act-delete" onclick="deleteTransaction(\''+t.code+'\')">Hapus</button>'
         +'</div>';
     } else if(state.editingCode === t.code){
@@ -663,11 +769,9 @@ function renderHistory(){
         +'<button class="link-btn" onclick="cancelReturnConfirm()">Batal</button>'
         +'</div>';
     } else {
-      actionCell = '<div class="action-cell" style="align-items:center;">'
+      actionCell = '<div class="action-cell">'
         +'<button class="action-btn act-return" onclick="startReturnConfirm(\''+t.code+'\')">Tandai kembali</button>'
         +'<button class="action-btn act-edit" onclick="startEditLoan(\''+t.code+'\')">Edit</button>'
-        +'<input type="number" id="histCopies_'+t.code+'" value="'+defaultCopies+'" min="1" style="width:40px; padding:3px 5px; font-size:11.5px; border:1px solid var(--line); border-radius:2px;" title="Jumlah Papan">'
-        +'<button class="action-btn act-reprint" onclick="printVoucher(\''+t.code+'\', parseInt(document.getElementById(\'histCopies_'+t.code+'\').value) || 1)">Cetak</button>'
         +'<button class="action-btn act-delete" onclick="deleteTransaction(\''+t.code+'\')">Hapus</button>'
         +'</div>';
     }
@@ -681,7 +785,7 @@ function renderHistory(){
       +'<td>'+(t.itemDetail||'-')+'</td>'
       +'<td class="mono">'+(t.manualNo||'-')+'</td>'
       +'<td>'+fmtDate(t.date)+' '+(t.time||'')+'</td>'
-      +'<td>'+(t.returnDate ? fmtDate(t.returnDate)+' '+(t.returnTime||'') : '-')+'</td>'
+      +'<td>'+(t.returnDate ? fmtDate(t.returnDate)+' '+(t.time||'') : '-')+'</td>'
       +'<td><span class="status-pill '+t.status+'">'+(t.status==='dipinjam'?'Dipinjam':'Dikembalikan')+'</span></td>'
       +'<td>'+actionCell+'</td>'
       +'</tr>';
@@ -766,12 +870,10 @@ document.getElementById('historyLocationFilter').addEventListener('change', rend
 document.getElementById('historyDateFrom').addEventListener('change', renderHistory);
 document.getElementById('historyDateTo').addEventListener('change', renderHistory);
 
-// Cek sesi login dulu, baru muat data pertama kali
 checkAuthAndInit();
 
-// Sinkron berkala dengan server, supaya perubahan dari PC lain di LAN ikut terlihat.
 setInterval(() => {
-  if(state.view === 'form' || state.view === 'add-item') return;
+  if(state.view === 'form' || state.view === 'add-item' || state.view === 'manage-item' || state.view === 'edit-item') return;
   if(state.editingCode || state.confirmingReturnCode) return;
   loadAll();
 }, 8000);
