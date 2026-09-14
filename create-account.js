@@ -1,15 +1,3 @@
-// Script untuk membuat atau mengganti password akun login SIPAM.
-// SENGAJA TIDAK ADA fitur "daftar akun" di aplikasi web-nya — pembuatan akun
-// HANYA bisa lewat command ini, langsung di PC server. Jadi cuma orang yang
-// punya akses ke PC server (pemilik/admin) yang bisa membuat akun baru.
-//
-// Cara pakai (dijalankan di folder sipam-server):
-//   node create-account.js <username> <password>
-//
-// Contoh:
-//   node create-account.js operator1 rahasia123
-//
-// Kalau username sudah ada, passwordnya akan diperbarui (bukan bikin akun baru).
 
 const fs = require('fs');
 const path = require('path');
