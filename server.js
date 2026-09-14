@@ -19,7 +19,6 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// ---------- Penyimpanan data (file JSON sederhana, cukup untuk skala 1 PT) ----------
 function loadJson(file, fallback) {
   try {
     if (!fs.existsSync(file)) return fallback;
@@ -41,11 +40,31 @@ let transactions = loadJson(TX_FILE, []);
 function persistItems() { saveJson(ITEMS_FILE, items); }
 function persistTransactions() { saveJson(TX_FILE, transactions); }
 
+const ITEM_STATUSES = ['tersedia', 'dipinjam', 'discontinued'];
+
+function syncStatusFromAvailability(item) {
+  if (item.status !== 'discontinued') {
+    item.status = item.available > 0 ? 'tersedia' : 'dipinjam';
+  }
+  return item;
+}
+
+function migrateItemStatuses() {
+  let changed = false;
+  items.forEach(item => {
+    if (!ITEM_STATUSES.includes(item.status)) {
+      syncStatusFromAvailability(item);
+      changed = true;
+    }
+  });
+  if (changed) persistItems();
+}
+migrateItemStatuses();
+
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 function nowTime() {
-  // Waktu real-time dengan jam:menit:detik, dipakai untuk pencatatan pinjam & kembali.
   const d = new Date();
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
 }
@@ -55,14 +74,6 @@ function fmtDateID(dateStr) {
   return d + '/' + m + '/' + y;
 }
 
-// Kode transaksi unik berdasarkan tanggal transaksi.
-// Format dasar: TAHUN (4 digit) + BULAN (tanpa leading zero) + TANGGAL (tanpa leading zero)
-//   2026-09-09 -> 202699
-//   2026-10-15 -> 20261015
-//   2026-01-05 -> 202615
-// Karena format ini bisa menghasilkan kode yang sama untuk beberapa transaksi di tanggal
-// yang sama, ditambahkan akhiran "-2", "-3", dst HANYA jika kode dasarnya sudah dipakai
-// pada hari itu, supaya kode transaksi tetap unik.
 function dateCodeBase(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return String(y) + String(m) + String(d);
@@ -79,7 +90,6 @@ function genId(prefix) {
   return prefix + '-' + Date.now() + '-' + idCounter + '-' + Math.floor(Math.random() * 100000);
 }
 
-// ---------- Import Excel: parsing sheet ke item pisau ----------
 function parseWorkbookToItems(workbook) {
   const result = [];
   workbook.SheetNames.forEach(sheetName => {
@@ -103,7 +113,6 @@ function parseWorkbookToItems(workbook) {
       if (!r || r.every(c => c === '' || c === undefined || c === null)) continue;
       const produk = idx.produk > -1 ? String(r[idx.produk] || '').trim() : '';
       if (!produk) continue;
-      // Lokasi rak mengikuti kolom "Rak" di Excel, BUKAN nama sheet/tab-nya.
       const rakValue = idx.rak > -1 ? String(r[idx.rak] || '').trim() : '';
       result.push({
         id: genId('imp'),
@@ -117,6 +126,7 @@ function parseWorkbookToItems(workbook) {
         customer: idx.customer > -1 ? String(r[idx.customer] || '').trim() : '',
         stock: 1,
         available: 1,
+        status: 'tersedia',
         unit: 'unit'
       });
     }
@@ -124,11 +134,6 @@ function parseWorkbookToItems(workbook) {
   return result;
 }
 
-// Menyamakan besar-kecil huruf nama customer, supaya "Campuran" dan "CAMPURAN"
-// (misalnya beda penulisan di beberapa sheet Excel) dianggap satu customer yang
-// sama, bukan dua data terpisah yang bikin susah dicari. Casing yang dipakai
-// adalah casing pertama yang sudah pernah tersimpan di sistem (item atau
-// transaksi manapun); kalau benar-benar baru, dipakai apa adanya.
 function resolveCustomerCasing(rawName) {
   const name = (rawName || '').toString().trim();
   if (!name) return '';
@@ -140,27 +145,21 @@ function resolveCustomerCasing(rawName) {
   return name;
 }
 
-// ---------- App ----------
 const app = express();
 app.use(express.json());
 
-// Sesi login. Secret dibuat acak tiap kali server dijalankan — kalau server
-// di-restart, semua orang perlu login ulang (wajar untuk aplikasi internal).
 const crypto = require('crypto');
 app.use(session({
   secret: crypto.randomBytes(32).toString('hex'),
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 12 * 60 * 60 * 1000 } // 12 jam
+  cookie: { maxAge: 12 * 60 * 60 * 1000 }
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
-// -- Login / logout --
-// TIDAK ADA endpoint pendaftaran akun di sini. Akun hanya dibuat lewat
-// `node create-account.js <username> <password>` langsung di PC server.
 app.post('/api/login', (req, res) => {
   const username = ((req.body && req.body.username) || '').trim();
   const password = (req.body && req.body.password) || '';
@@ -184,19 +183,11 @@ app.get('/api/me', (req, res) => {
   return res.status(401).json({ error: 'Belum login.' });
 });
 
-// Semua endpoint /api/* di bawah baris ini wajib sudah login.
-// Hanya ada satu tingkat akses — begitu login, akses penuh (tidak ada
-// pembedaan admin/operator).
 function requireAuth(req, res, next) {
   if (req.session && req.session.username) return next();
   return res.status(401).json({ error: 'Sesi berakhir, silakan login lagi.' });
 }
 app.use('/api', requireAuth);
-
-// -- Items --
-app.get('/api/items', (req, res) => {
-  res.json(items);
-});
 
 app.post('/api/items', (req, res) => {
   const b = req.body || {};
@@ -205,9 +196,7 @@ app.post('/api/items', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Nama pisau wajib diisi.' });
   if (!rak) return res.status(400).json({ error: 'Rak wajib diisi.' });
 
-  // Lokasi mengikuti nilai Rak (bukan lagi input terpisah).
   const location = rak;
-  // Setiap pisau dianggap satu unit fisik (tidak ada konsep jumlah stok).
   const newItem = {
     id: genId('manual'),
     name,
@@ -220,11 +209,70 @@ app.post('/api/items', (req, res) => {
     customer: resolveCustomerCasing(b.customer),
     stock: 1,
     available: 1,
+    status: 'tersedia',
     unit: 'unit'
   };
   items.push(newItem);
   persistItems();
   res.status(201).json(newItem);
+});
+
+app.get('/api/items', (req, res) => {
+  const includeDiscontinued = req.query.includeDiscontinued === 'true';
+  const result = includeDiscontinued
+    ? items
+    : items.filter(i => i.status !== 'discontinued');
+  res.json(result);
+});
+
+app.post('/api/items/:id/discontinue', (req, res) => {
+  const item = items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Pisau tidak ditemukan.' });
+  if (item.status === 'dipinjam') {
+    return res.status(400).json({ error: 'Pisau ini sedang dipinjam — tidak bisa di-discontinue sebelum dikembalikan.' });
+  }
+  if (item.status === 'discontinued') {
+    return res.status(400).json({ error: 'Pisau ini sudah berstatus discontinued.' });
+  }
+  item.status = 'discontinued';
+  persistItems();
+  res.json(item);
+});
+
+app.post('/api/items/:id/reactivate', (req, res) => {
+  const item = items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Pisau tidak ditemukan.' });
+  if (item.status !== 'discontinued') {
+    return res.status(400).json({ error: 'Pisau ini sedang tidak berstatus discontinued.' });
+  }
+  // Pastikan status dikembalikan sesuai stok secara mutlak
+  item.status = item.available > 0 ? 'tersedia' : 'dipinjam';
+  persistItems();
+  res.json(item);
+});
+
+app.patch('/api/items/:id', (req, res) => {
+  const item = items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Pisau tidak ditemukan.' });
+  
+  const b = req.body || {};
+  if (b.name !== undefined) item.name = String(b.name).trim();
+  if (b.rak !== undefined) {
+    item.rak = String(b.rak).trim();
+    item.location = item.rak;
+  }
+  if (b.tempat !== undefined) item.tempat = String(b.tempat).trim();
+  if (b.mata !== undefined) item.mata = String(b.mata).trim();
+  if (b.papan !== undefined) item.papan = String(b.papan).trim();
+  if (b.manualNo !== undefined) item.manualNo = String(b.manualNo).trim();
+  if (b.customer !== undefined) item.customer = resolveCustomerCasing(b.customer);
+  
+  if (!item.name || !item.rak) {
+    return res.status(400).json({ error: 'Nama dan Rak wajib diisi.' });
+  }
+  
+  persistItems();
+  res.json(item);
 });
 
 app.delete('/api/items/:id', (req, res) => {
@@ -235,8 +283,6 @@ app.delete('/api/items/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// Hapus banyak pisau sekaligus (dipilih lewat checkbox di katalog).
-// Riwayat transaksi pisau-pisau yang dihapus tetap disimpan untuk audit.
 app.post('/api/items/bulk-delete', (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
   if (ids.length === 0) return res.status(400).json({ error: 'Tidak ada pisau yang dipilih.' });
@@ -256,9 +302,6 @@ app.post('/api/import', upload.single('file'), (req, res) => {
     if (parsed.length === 0) {
       return res.status(400).json({ error: 'Tidak ada baris yang bisa dibaca. Pastikan ada kolom "Nama Produk".' });
     }
-    // Setiap baris dari Excel SELALU ditambahkan sebagai data baru — walau ada
-    // pisau lain dengan nama/rak yang sama persis, datanya TIDAK ditimpa.
-    // Data yang sudah ada (termasuk yang ditambah manual) tidak disentuh sama sekali.
     parsed.forEach(inc => {
       inc.customer = resolveCustomerCasing(inc.customer);
       items.push(inc);
@@ -270,7 +313,6 @@ app.post('/api/import', upload.single('file'), (req, res) => {
   }
 });
 
-// -- Transactions --
 app.get('/api/transactions', (req, res) => {
   res.json(transactions);
 });
@@ -292,9 +334,15 @@ app.post('/api/loans', (req, res) => {
 
   const item = items.find(i => i.id === itemId);
   if (!item) return res.status(404).json({ error: 'Pisau tidak ditemukan.' });
+  if (item.status === 'discontinued') return res.status(400).json({ error: 'Pisau ini sudah discontinued dan tidak bisa dipinjam.' });
   if (item.available <= 0) return res.status(400).json({ error: 'Pisau ini sedang tidak tersedia.' });
 
   const itemDetail = 'Tempat ' + item.tempat + ' · Rak ' + item.rak + ' · Mata ' + item.mata + ' · Papan ' + item.papan;
+  let voucherCount = parseInt(b.voucherCount, 10);
+  if (!voucherCount || voucherCount < 1) {
+    const papanNum = parseInt(item.papan, 10);
+    voucherCount = (papanNum && papanNum > 0) ? papanNum : 1;
+  }
   const tx = {
     code: nextCode(date),
     operator, customer, spk, product,
@@ -303,15 +351,26 @@ app.post('/api/loans', (req, res) => {
     manualNo: item.manualNo || '',
     location: item.location,
     qty: 1, date, time: nowTime(),
+    voucherCount,
+    adminCopyPrinted: false,
     status: 'dipinjam',
     returnDate: null,
     returnTime: null
   };
   transactions.unshift(tx);
   item.available -= 1;
+  syncStatusFromAvailability(item);
   persistItems();
   persistTransactions();
   res.status(201).json(tx);
+});
+
+app.post('/api/loans/:code/mark-admin-printed', (req, res) => {
+  const tx = transactions.find(t => t.code === req.params.code);
+  if (!tx) return res.status(404).json({ error: 'Transaksi tidak ditemukan.' });
+  tx.adminCopyPrinted = true;
+  persistTransactions();
+  res.json(tx);
 });
 
 app.post('/api/returns/:code', (req, res) => {
@@ -324,16 +383,15 @@ app.post('/api/returns/:code', (req, res) => {
   tx.returnDate = returnDate;
   tx.returnTime = nowTime();
   const item = items.find(i => i.id === tx.itemId);
-  if (item) item.available = Math.min(item.stock, item.available + tx.qty);
+  if (item) {
+    item.available = Math.min(item.stock, item.available + tx.qty);
+    syncStatusFromAvailability(item);
+  }
   persistItems();
   persistTransactions();
   res.json(tx);
 });
 
-// Edit operator & tanggal pinjam untuk transaksi yang masih berstatus "dipinjam" —
-// mengantisipasi pergantian operator jaga setelah pisau sudah terlanjur dipinjamkan.
-// Kode transaksi TIDAK ikut berubah walau tanggalnya diedit, supaya tetap konsisten
-// dengan voucher yang sudah dicetak sebelumnya.
 app.patch('/api/loans/:code', (req, res) => {
   const tx = transactions.find(t => t.code === req.params.code);
   if (!tx) return res.status(404).json({ error: 'Transaksi tidak ditemukan.' });
@@ -350,17 +408,16 @@ app.patch('/api/loans/:code', (req, res) => {
   res.json(tx);
 });
 
-// Hapus satu baris riwayat peminjaman (fiturnya sama seperti hapus pisau di
-// katalog: konfirmasi dulu di sisi client, lalu hapus permanen). Kalau
-// transaksi yang dihapus masih berstatus "dipinjam", pisaunya otomatis
-// dikembalikan ke status tersedia supaya tidak "nyangkut" selamanya.
 app.delete('/api/loans/:code', (req, res) => {
   const idx = transactions.findIndex(t => t.code === req.params.code);
   if (idx === -1) return res.status(404).json({ error: 'Transaksi tidak ditemukan.' });
   const tx = transactions[idx];
   if (tx.status === 'dipinjam') {
     const item = items.find(i => i.id === tx.itemId);
-    if (item) item.available = Math.min(item.stock, item.available + 1);
+    if (item) {
+      item.available = Math.min(item.stock, item.available + 1);
+      syncStatusFromAvailability(item);
+    }
     persistItems();
   }
   transactions.splice(idx, 1);
@@ -368,9 +425,6 @@ app.delete('/api/loans/:code', (req, res) => {
   res.json({ ok: true });
 });
 
-// Export riwayat peminjaman ke Excel. Baris yang diekspor dikirim dari client persis
-// seperti apa yang sedang ditampilkan di tabel riwayat (mengikuti filter yang aktif),
-// jadi hasil export selalu sesuai dengan apa yang terlihat di layar.
 app.post('/api/export', (req, res) => {
   const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
   if (rows.length === 0) return res.status(400).json({ error: 'Tidak ada data untuk diekspor.' });
