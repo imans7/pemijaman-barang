@@ -148,7 +148,6 @@ function getFilteredItems(){
     return matchQ && matchLoc && matchCust;
   });
 
-  // Tambahkan logika pengurutan: jika mode discontinue aktif, taruh data discontinue di paling atas
   if (state.showDiscontinued) {
     filtered.sort((a, b) => {
       if (a.status === 'discontinued' && b.status !== 'discontinued') return -1;
@@ -200,30 +199,32 @@ function renderCatalog(){
   list.innerHTML = filtered.map(i=>{
     const isDiscontinued = i.status === 'discontinued';
     const out = i.available <= 0 && !isDiscontinued;
-    
     const sel = i.id === state.selectedItemId ? ' selected' : '';
     const cls = out ? ' out' : sel;
     
+    const reasonText = i.discontinueReason ? ' ('+i.discontinueReason+')' : '';
     const badge = isDiscontinued 
-      ? '<span class="badge" style="background:var(--line);color:var(--ink-soft);">Discontinued</span>'
+      ? '<span class="badge" style="background:var(--line);color:var(--ink-soft);">Discontinued'+reasonText+'</span>'
       : (out ? '<span class="badge out">Dipinjam</span>' : '<span class="badge avail">Tersedia</span>');
     
     let actionBtns = '';
     if (isDiscontinued) {
-      actionBtns = '<button class="btn secondary small" style="color:var(--ok); border-color:var(--ok); margin-right:6px;" onclick="event.stopPropagation();reactivateItem(\''+i.id+'\')">Aktifkan</button>'
-                 + '<button class="btn secondary small" style="color:var(--warn); border-color:var(--warn);" onclick="event.stopPropagation();deleteItemPermanently(\''+i.id+'\')">Hapus</button>';
+      actionBtns = '<button class="btn secondary small" style="color:var(--ok); border-color:var(--ok); margin-right:6px;" onclick="event.stopPropagation(); reactivateItem(\''+i.id+'\')">Aktifkan</button>'
+                 + '<button class="btn secondary small" style="color:var(--warn); border-color:var(--warn);" onclick="event.stopPropagation(); deleteItemPermanently(\''+i.id+'\')">Hapus</button>';
     } else {
-      actionBtns = '<button class="btn secondary small" style="margin-right:6px;" onclick="event.stopPropagation();viewItemHistory(\''+i.id+'\')">Riwayat / Edit</button>'
-                 + '<button class="btn secondary small" style="color:var(--warn); border-color:var(--warn);" onclick="event.stopPropagation();promptManageItem(\''+i.id+'\')">Hapus / Discon</button>';
+      actionBtns = '<button class="btn secondary small" style="margin-right:6px;" onclick="event.stopPropagation(); viewItemHistory(\''+i.id+'\')">Riwayat / Edit</button>'
+                 + '<button class="btn secondary small" style="color:var(--warn); border-color:var(--warn);" onclick="event.stopPropagation(); promptManageItem(\''+i.id+'\')">Hapus / Discon</button>';
     }
 
     const clickAttr = (out || isDiscontinued) ? '' : ' onclick="selectItem(\''+i.id+'\')"';
     const checked = state.selectedIds.has(i.id) ? ' checked' : '';
+    
+    const noteHtml = i.note ? '<div style="font-size:11px; color:var(--ink-soft); margin-top:5px; font-style:italic;">Catatan: '+i.note+'</div>' : '';
 
     return '<div class="item-tag'+cls+'"'+clickAttr+'>'
       +'<input type="checkbox" class="item-checkbox"'+checked+' onclick="event.stopPropagation()" onchange="toggleItemCheckbox(\''+i.id+'\', this.checked)">'
       +'<div class="hole"></div>'
-      +'<div class="info"><b>'+i.name+'</b><span>'+itemDetailLine(i)+(i.customer?' · Customer '+i.customer:'')+'</span></div>'
+      +'<div class="info"><b>'+i.name+'</b><span>'+itemDetailLine(i)+(i.customer?' · Customer '+i.customer:'')+'</span>'+noteHtml+'</div>'
       +'<div class="nourut-box"><label>No Urut</label><div class="nourut-value">'+(i.manualNo||'-')+'</div></div>'
       +'<div class="side" style="align-items:flex-end;">'+badge+'<div style="display:flex; gap:6px; margin-top:8px;">'+actionBtns+'</div></div>'
       +'</div>';
@@ -300,6 +301,12 @@ function promptManageItem(id){
   render();
 }
 
+function openDiscontinueReport(){
+  state.selectedItemId = null;
+  state.view = 'discontinue-report';
+  render();
+}
+
 async function deleteItemPermanently(id){
   const item = state.items.find(i=>i.id===id);
   if(!item) return;
@@ -313,20 +320,18 @@ async function deleteItemPermanently(id){
     if(state.selectedItemId===id){ state.selectedItemId=null; state.view='idle'; }
     state.selectedIds.delete(id);
     await loadAll();
-  }catch(e){
-    alert(e.message);
-  }
+  }catch(e){ alert(e.message); }
 }
 
 async function discontinueItem(id){
+  const reasonEl = document.getElementById('mDiscontinueReason');
+  const reason = reasonEl ? reasonEl.value.trim() : '';
   try{
-    await apiSend(API.items+'/'+encodeURIComponent(id)+'/discontinue', 'POST');
+    await apiSend(API.items+'/'+encodeURIComponent(id)+'/discontinue', 'POST', { reason });
     if(state.selectedItemId===id){ state.selectedItemId=null; state.view='idle'; }
     state.selectedIds.delete(id);
     await loadAll();
-  }catch(e){
-    alert(e.message);
-  }
+  }catch(e){ alert(e.message); }
 }
 
 async function reactivateItem(id){
@@ -334,9 +339,7 @@ async function reactivateItem(id){
     await apiSend(API.items+'/'+encodeURIComponent(id)+'/reactivate', 'POST');
     if(state.selectedItemId===id){ state.selectedItemId=null; state.view='idle'; }
     await loadAll();
-  }catch(e){
-    alert(e.message);
-  }
+  }catch(e){ alert(e.message); }
 }
 
 async function submitAddItem(){
@@ -347,6 +350,7 @@ async function submitAddItem(){
   const papan = document.getElementById('aPapan').value.trim();
   const customer = document.getElementById('aCustomer').value.trim();
   const manualNo = document.getElementById('aManualNo').value.trim();
+  const note = document.getElementById('aNote').value.trim();
   const errEl = document.getElementById('addItemErr');
 
   if(!name){ errEl.textContent='Nama pisau wajib diisi.'; errEl.style.display='block'; return; }
@@ -354,7 +358,7 @@ async function submitAddItem(){
   errEl.style.display='none';
 
   try{
-    await apiSend(API.items, 'POST', { name, tempat, rak, mata, papan, customer, manualNo });
+    await apiSend(API.items, 'POST', { name, tempat, rak, mata, papan, customer, manualNo, note });
     state.view = 'idle';
     await loadAll();
   }catch(e){
@@ -380,6 +384,7 @@ async function submitEditItem(){
   const papan = document.getElementById('ePapan').value.trim();
   const customer = document.getElementById('eCustomer').value.trim();
   const manualNo = document.getElementById('eManualNo').value.trim();
+  const note = document.getElementById('eNote').value.trim();
   const errEl = document.getElementById('editItemErr');
 
   if(!name){ errEl.textContent='Nama pisau wajib diisi.'; errEl.style.display='block'; return; }
@@ -387,8 +392,8 @@ async function submitEditItem(){
   errEl.style.display='none';
 
   try{
-    await apiSend(API.items+'/'+encodeURIComponent(item.id), 'PATCH', { name, tempat, rak, mata, papan, customer, manualNo });
-    state.view = 'history'; // Setelah edit, kembalikan ke panel riwayat/edit
+    await apiSend(API.items+'/'+encodeURIComponent(item.id), 'PATCH', { name, tempat, rak, mata, papan, customer, manualNo, note });
+    state.view = 'history';
     await loadAll();
   }catch(e){
     errEl.textContent = e.message;
@@ -402,7 +407,57 @@ function renderOperatorPanel(){
   if(state.view === 'idle'){
     body.innerHTML = '<div class="empty-state">'
       +'<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><rect x="3" y="7" width="18" height="13" rx="1"/><path d="M8 7V5a4 4 0 018 0v2"/></svg>'
-      +'Pilih pisau dari katalog untuk mulai memproses peminjaman, atau klik "Riwayat" untuk melihat histori pinjam pisau tertentu.</div>';
+      +'Pilih pisau dari katalog untuk mulai memproses peminjaman, atau klik "Riwayat" untuk melihat histori pinjam pisau tertentu.'
+      +'<div style="margin-top:24px;"><button class="btn secondary small" onclick="openDiscontinueReport()">Lihat Laporan Discontinue</button></div>'
+      +'</div>';
+    return;
+  }
+
+  if(state.view === 'discontinue-report'){
+    const reportItems = state.items.filter(i => i.discontinueHistory && i.discontinueHistory.length > 0);
+
+    if (reportItems.length === 0) {
+      body.innerHTML = '<div class="detail-panel"><h3>Laporan Discontinue</h3><p style="color:var(--ink-soft);font-size:13px;margin:12px 0;">Belum ada data riwayat discontinue pada pisau manapun.</p><div class="btn-row"><button class="btn secondary" onclick="cancelSelection()">Tutup</button></div></div>';
+      return;
+    }
+
+    let tableRows = '';
+    reportItems.forEach(i => {
+      const hist = i.discontinueHistory;
+      const totalCount = hist.length;
+      hist.forEach((h, idx) => {
+        const isFirst = idx === 0; 
+        tableRows += '<tr>'
+          + '<td style="vertical-align:top; padding:8px; border-bottom:1px solid var(--line);">'+(isFirst ? '<b>'+i.name+'</b><br><span style="font-size:11px;color:var(--ink-soft);">'+itemDetailLine(i)+'</span>' : '')+'</td>'
+          + '<td class="mono" style="text-align:center; vertical-align:top; padding:8px; border-bottom:1px solid var(--line);">'+(isFirst ? totalCount+'x' : '')+'</td>'
+          + '<td style="vertical-align:top; padding:8px; border-bottom:1px solid var(--line);">'+fmtDate(h.dateDiscontinued)+'</td>'
+          + '<td style="vertical-align:top; padding:8px; border-bottom:1px solid var(--line);">'+(h.dateReactivated ? fmtDate(h.dateReactivated) : '<span style="color:var(--warn);font-size:11.5px;font-weight:500;">Masih nonaktif</span>')+'</td>'
+          + '<td style="vertical-align:top; padding:8px; border-bottom:1px solid var(--line);">'+(h.reason || '-')+'</td>'
+          + '</tr>';
+      });
+    });
+
+    body.innerHTML = '<div class="detail-panel">'
+      +'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
+      +'<h3 style="margin:0; font-size:16px;">Laporan Riwayat Discontinue</h3>'
+      +'<button class="btn accent small" onclick="exportDiscontinueReport()">Export ke Excel</button>'
+      +'</div>'
+      +'<div style="max-height:380px; overflow-y:auto; border:1px solid var(--line); border-radius:2px;">'
+      +'<table style="width:100%; border-collapse:collapse; font-size:12.5px; text-align:left;">'
+      +'<thead style="background:var(--bg); position:sticky; top:0; z-index:1;"><tr>'
+      +'<th style="padding:10px 8px; border-bottom:1px solid var(--line);">Nama & Deskripsi</th>'
+      +'<th style="padding:10px 8px; border-bottom:1px solid var(--line); text-align:center;">Total</th>'
+      +'<th style="padding:10px 8px; border-bottom:1px solid var(--line);">Tgl Discontinue</th>'
+      +'<th style="padding:10px 8px; border-bottom:1px solid var(--line);">Tgl Aktif</th>'
+      +'<th style="padding:10px 8px; border-bottom:1px solid var(--line);">Alasan</th>'
+      +'</tr></thead>'
+      +'<tbody>'
+      + tableRows
+      +'</tbody>'
+      +'</table>'
+      +'</div>'
+      +'</div>'
+      +'<div class="btn-row"><button class="btn secondary" onclick="cancelSelection()">Tutup</button></div>';
     return;
   }
 
@@ -420,6 +475,7 @@ function renderOperatorPanel(){
       +'</div>'
       +'<div class="field"><label>No Urut (opsional)</label><input type="text" id="aManualNo" placeholder="Nomor urut, jika ada"></div>'
       +'<div class="field"><label>Customer (opsional)</label><input type="text" id="aCustomer" placeholder="Customer tetap pisau ini"></div>'
+      +'<div class="field"><label>Catatan Singkat (opsional)</label><input type="text" id="aNote" placeholder="Misal: Sedikit tumpul, pisau sensitif, dll"></div>'
       +'<div id="addItemErr" class="err" style="display:none;"></div>'
       +'<div class="btn-row"><button class="btn accent" onclick="submitAddItem()">Simpan pisau</button>'
       +'<button class="btn secondary" onclick="cancelSelection()">Batal</button></div>';
@@ -442,6 +498,7 @@ function renderOperatorPanel(){
       +'</div>'
       +'<div class="field"><label>No Urut</label><input type="text" id="eManualNo" value="'+(item.manualNo||'')+'"></div>'
       +'<div class="field"><label>Customer (opsional)</label><input type="text" id="eCustomer" value="'+(item.customer||'')+'"></div>'
+      +'<div class="field"><label>Catatan Singkat (opsional)</label><input type="text" id="eNote" value="'+(item.note||'')+'" placeholder="Misal: Sedikit tumpul, pisau sensitif, dll"></div>'
       +'<div id="editItemErr" class="err" style="display:none;"></div>'
       +'<div class="btn-row"><button class="btn accent" onclick="submitEditItem()">Simpan Perubahan</button>'
       +'<button class="btn secondary" onclick="viewItemHistory(\''+item.id+'\')">Batal</button></div>';
@@ -457,7 +514,9 @@ function renderOperatorPanel(){
       +'Silakan pilih tindakan:<br>'
       +'<b>• Discontinue:</b> Menyembunyikan pisau dari katalog agar tidak bisa dipinjam, namun data dan riwayat tidak terhapus.<br>'
       +'<b>• Hapus Permanen:</b> Menghapus data pisau dari sistem selamanya.'
-      +'</p></div>'
+      +'</p>'
+      +'<div class="field" style="margin-bottom:16px;"><label>Alasan Discontinue (jika pilih Discontinue)</label><input type="text" id="mDiscontinueReason" placeholder="Misal: Rusak, hilang, sedang diperbaiki..."></div>'
+      +'</div>'
       +'<div class="btn-row">'
       +'<button class="btn secondary" onclick="discontinueItem(\''+item.id+'\')">Discontinue (Sembunyikan)</button>'
       +'<button class="btn accent" style="background:var(--warn);border-color:var(--warn);" onclick="deleteItemPermanently(\''+item.id+'\')">Hapus Permanen</button>'
@@ -477,6 +536,9 @@ function renderOperatorPanel(){
       +'<div><span>Papan</span><b>'+item.papan+'</b></div>'
       +'<div><span>No Urut</span><b>'+(item.manualNo||'-')+'</b></div>'
       +'</div>';
+      
+    const noteAlert = item.note ? '<div style="background:var(--warn-soft); color:var(--warn); padding:8px 12px; margin-bottom:12px; border-radius:2px; font-size:12.5px; border:1px solid var(--warn);"><b>Catatan:</b> '+item.note+'</div>' : '';
+
     const histHtml = list.length===0
       ? '<div class="empty-state" style="padding:18px 0;">Belum pernah dipinjam.</div>'
       : list.map(t=>{
@@ -487,13 +549,13 @@ function renderOperatorPanel(){
         }).join('')
         + (fullList.length > 3 ? '<div class="hint" style="margin-top:8px;">Menampilkan 3 peminjaman terbaru dari total '+fullList.length+'.</div>' : '');
     
-    // UI digabung antara judul dan tombol "Edit Data"
     body.innerHTML = '<div class="detail-panel">'
       +'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
       +'<h3 style="margin:0; font-size:16px;">'+item.name+'</h3>'
       +'<button class="btn secondary small" onclick="openEditItemForm(\''+item.id+'\')">Edit Data</button>'
       +'</div>'
       +detailGrid
+      +noteAlert
       +'<h3 style="font-size:13px;color:var(--ink-soft);margin-bottom:6px;">Riwayat peminjaman</h3>'
       +histHtml
       +'</div>'
@@ -507,11 +569,16 @@ function renderOperatorPanel(){
     const item = state.items.find(i=>i.id===state.selectedItemId);
     if(!item){ state.view='idle'; render(); return; }
     const defaultCount = defaultVoucherCount(item);
+    
+    const noteAlert = item.note ? '<div style="background:var(--warn-soft); color:var(--warn); padding:6px 10px; margin-top:8px; border-radius:2px; font-size:12px;"><b>Catatan:</b> '+item.note+'</div>' : '';
+
     body.innerHTML =
       '<div class="selected-strip"><div class="row1"><span>Meminjamkan: <b>'+item.name+'</b></span>'
       +'<button class="link-btn" onclick="cancelSelection()">Ganti</button></div>'
       +'<span class="meta">Detail Pisau: '+itemDetailLine(item)+'</span>'
-      +'<span class="meta">No Urut: '+(item.manualNo||'-')+'</span></div>'
+      +'<span class="meta">No Urut: '+(item.manualNo||'-')+'</span>'
+      +noteAlert
+      +'</div>'
       +'<div class="field"><label>Operator</label><input type="text" id="fOperator" value="'+(state.lastOperator||'')+'" placeholder="Nama operator yang menginput"></div>'
       +'<div class="row2">'
       +'<div class="field"><label>Customer</label><input type="text" id="fCustomer" value="'+(item.customer||'')+'" placeholder="Nama customer"></div>'
@@ -536,18 +603,37 @@ function renderOperatorPanel(){
   }
 }
 
+// ---------------- FORMAT LAYOUT CETAK BARU: GRID 2x4 ----------------
 function renderVoucherHtml(tx, forPrint, copyLabel){
-  return '<div class="voucher" style="'+(forPrint?'max-width:320px;':'')+'">'
-    +(copyLabel ? '<div class="voucher-copy-label">'+copyLabel+'</div>' : '')
-    +'<div class="vh"><b>SIPAM</b><span>Voucher peminjaman</span></div>'
-    +'<div class="vrow"><span>Operator</span><span>'+tx.operator+'</span></div>'
-    +'<div class="vrow"><span>Customer</span><span>'+tx.customer+'</span></div>'
-    +'<div class="vrow"><span>No. SPK</span><span>'+tx.spk+'</span></div>'
-    +'<div class="vrow"><span>Nama Produk</span><span>'+tx.product+'</span></div>'
-    +'<div class="vrow"><span>Detail Pisau</span><span>'+tx.itemDetail+'</span></div>'
-    +'<div class="vrow"><span>No Urut</span><span>'+(tx.manualNo||'-')+'</span></div>'
-    +'<div class="vrow"><span>Tanggal pinjam</span><span>'+fmtDate(tx.date)+' '+(tx.time||'')+'</span></div>'
-    +'<div class="code">'+tx.code+'</div>'
+  const brandClass = tx.status === 'dipinjam' ? 'sipam-brand-out' : 'sipam-brand-returned';
+  
+  // Mengurangi sedikit padding agar teks muat tanpa overflow
+  const printStyle = forPrint ? 'padding:6px 10px; border:2px solid #333; width:100%; height:100%; box-sizing:border-box; display:flex; flex-direction:column; page-break-inside:avoid;' : '';
+  
+  // Penyesuaian Flexbox agar baris panjang (seperti Detail Pisau) bisa membungkus/wrap dengan aman
+  const rowStyle   = forPrint ? 'display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1px dotted #ccc; padding-bottom:3px; margin-bottom:3px;' : '';
+  const labelStyle = forPrint ? 'font-size:10px; color:#555; display:inline-block; width:65px; flex-shrink:0; line-height:1.2;' : '';
+  const valStyle   = forPrint ? 'font-size:11.5px; font-weight:bold; color:#000; text-align:right; flex-grow:1; line-height:1.2; word-break:break-word;' : '';
+  const titleStyle = forPrint ? 'font-size:14px; font-weight:900;' : '';
+
+  return '<div class="voucher" style="'+(forPrint? printStyle : '')+'">'
+    +(copyLabel ? '<div class="voucher-copy-label" style="'+(forPrint?'font-size:10px; font-weight:bold; border-bottom:1px solid #000; padding-bottom:2px; margin-bottom:4px; text-align:center; text-transform:uppercase;':'')+'">'+copyLabel+'</div>' : '')
+    
+    +'<div class="vh" style="'+(forPrint?'margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #000; padding-bottom:2px; flex-shrink:0;':'')+'"><b class="sipam-brand '+brandClass+'" style="'+titleStyle+'">SIPAM</b><span style="'+(forPrint?'font-size:10px;':'')+'">Voucher Peminjaman</span></div>'
+    
+    // Wrapper khusus bagian data: flex-grow agar mendistribusikan jarak yang tersisa di tengah tanpa memotong footer
+    +'<div style="flex-grow:1; display:flex; flex-direction:column; justify-content:center;">'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">Operator</span><span style="'+valStyle+'">'+tx.operator+'</span></div>'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">Customer</span><span style="'+valStyle+'">'+tx.customer+'</span></div>'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">No. SPK</span><span style="'+valStyle+'">'+tx.spk+'</span></div>'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">Nama Produk</span><span style="'+valStyle+'">'+tx.product+'</span></div>'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">Detail Pisau</span><span style="'+valStyle+'">'+tx.itemDetail+'</span></div>'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">No Urut</span><span style="'+valStyle+'">'+(tx.manualNo||'-')+'</span></div>'
+    +'<div class="vrow" style="'+rowStyle+'"><span style="'+labelStyle+'">Tgl Pinjam</span><span style="'+valStyle+'">'+fmtDate(tx.date)+'</span></div>'
+    +'</div>'
+    
+    // Footer: Kode otomatis diletakkan di paling bawah dengan flex-shrink:0
+    +'<div class="code" style="'+(forPrint?'font-size:13px; margin-top:2px; text-align:center; font-family:monospace; font-weight:bold; flex-shrink:0; padding-top:2px; border-top:1px dashed #999;':'')+'">'+tx.code+'</div>'
     +'</div>';
 }
 
@@ -556,17 +642,30 @@ function defaultVoucherCount(item){
   return (n && n>0) ? n : 1;
 }
 
-function voucherCopiesHtml(tx){
-  const n = tx.voucherCount || 1;
-  let html = '';
+function getVoucherPages(tx, overrideCount){
+  const n = overrideCount !== undefined ? overrideCount : (tx.voucherCount || 1);
+  let pages = [];
+  
   for(let i=1;i<=n;i++){
-    html += '<div class="voucher-page">'+renderVoucherHtml(tx, true, 'Papan '+i+' dari '+n)+'</div>';
+    pages.push(renderVoucherHtml(tx, true, 'Papan '+i+' dari '+n));
   }
   if(!tx.adminCopyPrinted){
-    html += '<div class="voucher-page">'+renderVoucherHtml(tx, true, 'Lembar untuk Admin (Arsip)')+'</div>';
+    pages.push(renderVoucherHtml(tx, true, 'Lembar untuk Admin (Arsip)'));
+  }
+  return pages;
+}
+
+function chunkAndRenderPrintPages(pagesArray) {
+  const chunkSize = 8; 
+  let html = '';
+  for(let i = 0; i < pagesArray.length; i += chunkSize) {
+    const chunk = pagesArray.slice(i, i + chunkSize);
+    // Menggunakan tinggi kertas A4 standar (290mm printable area) agar grid-rows tidak terlalu kecil
+    html += '<div class="print-page" style="display:grid; grid-template-columns:repeat(2, 1fr); grid-template-rows:repeat(4, 1fr); gap:10px; padding:10px; width:100%; height:290mm; box-sizing:border-box; page-break-after:always;">' + chunk.join('') + '</div>';
   }
   return html;
 }
+// --------------------------------------------------------------------
 
 async function submitLoan(){
   const item = state.items.find(i=>i.id===state.selectedItemId);
@@ -602,19 +701,36 @@ async function submitLoan(){
 }
 
 async function markAdminCopyPrinted(code){
-  try{ await apiSend('/api/loans/'+encodeURIComponent(code)+'/mark-admin-printed', 'POST'); }catch(e){ /* diamkan, tidak fatal */ }
+  try{ await apiSend('/api/loans/'+encodeURIComponent(code)+'/mark-admin-printed', 'POST'); }catch(e){ /* diamkan */ }
 }
 
-async function printVoucher(code){
+async function printVoucher(code, overrideCount){
   const tx = state.transactions.find(t=>t.code===code);
   if(!tx) return;
   const includesAdminCopy = !tx.adminCopyPrinted;
-  document.getElementById('printArea').innerHTML = '<div class="print-grid">'+voucherCopiesHtml(tx)+'</div>';
+  
+  const pages = getVoucherPages(tx, overrideCount);
+  document.getElementById('printArea').innerHTML = chunkAndRenderPrintPages(pages);
+  
   window.print();
   if(includesAdminCopy){
     tx.adminCopyPrinted = true;
     await markAdminCopyPrinted(code);
   }
+}
+
+function customReprint(code) {
+  const tx = state.transactions.find(t=>t.code===code);
+  if(!tx) return;
+  const currentCount = tx.voucherCount || 1;
+  const input = prompt('Berapa jumlah voucher (papan) yang ingin dicetak ulang untuk produk "' + tx.product + '"?', currentCount);
+  if(input === null) return;
+  const num = parseInt(input, 10);
+  if(isNaN(num) || num < 1) {
+    alert('Jumlah voucher tidak valid.');
+    return;
+  }
+  printVoucher(code, num);
 }
 
 async function bulkPrintHistory(){
@@ -623,8 +739,13 @@ async function bulkPrintHistory(){
   const txs = codes.map(c => state.transactions.find(t=>t.code===c)).filter(Boolean);
   if(txs.length===0) return;
   const codesNeedingAdminCopy = txs.filter(t => !t.adminCopyPrinted).map(t=>t.code);
-  document.getElementById('printArea').innerHTML = '<div class="print-grid">'+txs.map(voucherCopiesHtml).join('')+'</div>';
+  
+  let allPages = [];
+  txs.forEach(t => { allPages = allPages.concat(getVoucherPages(t)); });
+  
+  document.getElementById('printArea').innerHTML = chunkAndRenderPrintPages(allPages);
   window.print();
+  
   if(codesNeedingAdminCopy.length>0){
     txs.forEach(t => { if(codesNeedingAdminCopy.includes(t.code)) t.adminCopyPrinted = true; });
     await Promise.all(codesNeedingAdminCopy.map(markAdminCopyPrinted));
@@ -761,10 +882,12 @@ function renderHistory(){
     return;
   }
   body.innerHTML = rows.map(t=>{
+    const usageCount = state.transactions.filter(x => x.itemId === t.itemId).length;
+    
     let actionCell;
     if(t.status==='dikembalikan'){
       actionCell = '<div class="action-cell">'
-        +'<button class="action-btn act-reprint" onclick="printVoucher(\''+t.code+'\')">Cetak ulang</button>'
+        +'<button class="action-btn act-reprint" onclick="customReprint(\''+t.code+'\')">Cetak ulang</button>'
         +'<button class="action-btn act-delete" onclick="deleteTransaction(\''+t.code+'\')">Hapus</button>'
         +'</div>';
     } else if(state.editingCode === t.code){
@@ -783,10 +906,14 @@ function renderHistory(){
     } else {
       actionCell = '<div class="action-cell">'
         +'<button class="action-btn act-return" onclick="startReturnConfirm(\''+t.code+'\')">Tandai kembali</button>'
+        +'<button class="action-btn act-reprint" onclick="customReprint(\''+t.code+'\')">Cetak ulang</button>'
         +'<button class="action-btn act-edit" onclick="startEditLoan(\''+t.code+'\')">Edit</button>'
         +'<button class="action-btn act-delete" onclick="deleteTransaction(\''+t.code+'\')">Hapus</button>'
         +'</div>';
     }
+
+    actionCell += '<div class="hint" style="margin-top:6px; font-weight:600; text-align:center;">Total Pakai: '+usageCount+'x</div>';
+
     return '<tr>'
       +'<td><input type="checkbox" class="history-checkbox"'+(state.selectedHistoryCodes.has(t.code)?' checked':'')+' onchange="toggleHistoryCheckbox(\''+t.code+'\', this.checked)"></td>'
       +'<td class="mono">'+t.code+'</td>'
@@ -859,6 +986,54 @@ async function exportHistory(){
   }
 }
 
+async function exportDiscontinueReport(){
+  const reportItems = state.items.filter(i => i.discontinueHistory && i.discontinueHistory.length > 0);
+  if(reportItems.length === 0){
+    alert('Tidak ada data laporan untuk diekspor.');
+    return;
+  }
+
+  const rows = [];
+  reportItems.forEach(i => {
+    const hist = i.discontinueHistory;
+    const totalCount = hist.length;
+    hist.forEach((h, idx) => {
+      const isFirst = idx === 0;
+      rows.push({
+        name: isFirst ? i.name : '',
+        detail: isFirst ? itemDetailLine(i) : '',
+        total: isFirst ? totalCount + 'x' : '',
+        dateDiscontinued: fmtDate(h.dateDiscontinued),
+        dateReactivated: h.dateReactivated ? fmtDate(h.dateReactivated) : '',
+        reason: h.reason || '-'
+      });
+    });
+  });
+
+  try{
+    const res = await fetch('/api/export-discontinue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows })
+    });
+    if(!res.ok){
+      const err = await res.json().catch(()=>({}));
+      throw new Error(err.error || 'Gagal mengekspor data.');
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'laporan-discontinue-'+todayStr()+'.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }catch(e){
+    alert(e.message);
+  }
+}
+
 /* ---------- Root render + wiring ---------- */
 function render(){
   renderLocationFilter();
@@ -885,7 +1060,7 @@ document.getElementById('historyDateTo').addEventListener('change', renderHistor
 checkAuthAndInit();
 
 setInterval(() => {
-  if(state.view === 'form' || state.view === 'add-item' || state.view === 'manage-item' || state.view === 'edit-item') return;
+  if(state.view === 'form' || state.view === 'add-item' || state.view === 'manage-item' || state.view === 'edit-item' || state.view === 'discontinue-report') return;
   if(state.editingCode || state.confirmingReturnCode) return;
   loadAll();
 }, 8000);
