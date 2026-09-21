@@ -124,6 +124,7 @@ function parseWorkbookToItems(workbook) {
         rak: rakValue,
         manualNo: idx.manualNo > -1 ? String(r[idx.manualNo] || '').trim() : '',
         customer: idx.customer > -1 ? String(r[idx.customer] || '').trim() : '',
+        note: '',
         stock: 1,
         available: 1,
         status: 'tersedia',
@@ -207,6 +208,7 @@ app.post('/api/items', (req, res) => {
     rak,
     manualNo: (b.manualNo || '').toString().trim(),
     customer: resolveCustomerCasing(b.customer),
+    note: (b.note || '').toString().trim(),
     stock: 1,
     available: 1,
     status: 'tersedia',
@@ -234,7 +236,18 @@ app.post('/api/items/:id/discontinue', (req, res) => {
   if (item.status === 'discontinued') {
     return res.status(400).json({ error: 'Pisau ini sudah berstatus discontinued.' });
   }
+  
   item.status = 'discontinued';
+  const reason = ((req.body && req.body.reason) || '').trim();
+  item.discontinueReason = reason;
+
+  if (!item.discontinueHistory) item.discontinueHistory = [];
+  item.discontinueHistory.push({
+    reason: reason,
+    dateDiscontinued: todayStr(),
+    dateReactivated: null
+  });
+  
   persistItems();
   res.json(item);
 });
@@ -245,8 +258,17 @@ app.post('/api/items/:id/reactivate', (req, res) => {
   if (item.status !== 'discontinued') {
     return res.status(400).json({ error: 'Pisau ini sedang tidak berstatus discontinued.' });
   }
-  // Pastikan status dikembalikan sesuai stok secara mutlak
+  
   item.status = item.available > 0 ? 'tersedia' : 'dipinjam';
+  item.discontinueReason = '';
+  
+  if (item.discontinueHistory && item.discontinueHistory.length > 0) {
+    const lastRecord = item.discontinueHistory[item.discontinueHistory.length - 1];
+    if (!lastRecord.dateReactivated) {
+      lastRecord.dateReactivated = todayStr();
+    }
+  }
+  
   persistItems();
   res.json(item);
 });
@@ -266,6 +288,7 @@ app.patch('/api/items/:id', (req, res) => {
   if (b.papan !== undefined) item.papan = String(b.papan).trim();
   if (b.manualNo !== undefined) item.manualNo = String(b.manualNo).trim();
   if (b.customer !== undefined) item.customer = resolveCustomerCasing(b.customer);
+  if (b.note !== undefined) item.note = String(b.note).trim();
   
   if (!item.name || !item.rak) {
     return res.status(400).json({ error: 'Nama dan Rak wajib diisi.' });
@@ -460,6 +483,32 @@ app.post('/api/export', (req, res) => {
   res.send(buffer);
 });
 
+app.post('/api/export-discontinue', (req, res) => {
+  const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+  if (rows.length === 0) return res.status(400).json({ error: 'Tidak ada data untuk diekspor.' });
+
+  const header = ['Nama Pisau', 'Deskripsi Pisau', 'Total Discontinue', 'Tgl Discontinue', 'Tgl Aktif', 'Alasan'];
+  const aoa = [header, ...rows.map(r => [
+    r.name || '',
+    r.detail || '',
+    r.total || '',
+    r.dateDiscontinued || '',
+    r.dateReactivated || 'Masih nonaktif',
+    r.reason || '-'
+  ])];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = header.map(() => ({ wch: 22 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Laporan Discontinue');
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  const filename = 'laporan-discontinue-' + todayStr() + '.xlsx';
+  res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.listen(PORT, '0.0.0.0', () => {
@@ -472,6 +521,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('=================================================');
   console.log(' SIPAM - PT Inti Prima Karya');
   console.log(' Server berjalan di port ' + PORT);
+  console.log(' CLOSE CMD = CLOSE PROGRAM ' );
   console.log('');
   console.log(' Buka di PC ini      : http://localhost:' + PORT);
   addrs.forEach(a => console.log(' Buka dari PC lain    : http://' + a + ':' + PORT));
